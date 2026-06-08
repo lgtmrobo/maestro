@@ -10,6 +10,11 @@ import type {
 import { emptyTokenUsage, mergeUsage } from "./types.js";
 import { AgentError } from "./errors.js";
 import type { Logger } from "./logger.js";
+import {
+  TraceWriter,
+  serializeCustomTools,
+  type TraceResult,
+} from "./trace.js";
 
 export interface AgentRunnerOptions {
   workflow: WorkflowConfig;
@@ -28,10 +33,14 @@ export interface AgentRunnerOptions {
   ) => void;
   onTokenUsage?: (laneName: string, issueId: string, usage: TokenUsage) => void;
   onSessionId?: (laneName: string, issueId: string, sessionId: string) => void;
+  /** Called as soon as a trace bundle is written (right after prompt render). */
+  onTraceId?: (laneName: string, issueId: string, traceId: string) => void;
   /** Tools to expose to the agent. Backend translates to its native tool surface. */
   tools?: ToolDef[];
   /** Base env to pass to the agent subprocess. */
   env?: Record<string, string>;
+  /** Optional trace writer. When set, AgentRunner persists a per-run trace bundle. */
+  traceWriter?: TraceWriter;
 }
 
 /** One agent execution run for one issue. */
@@ -46,16 +55,31 @@ export class AgentRunner {
   async run(): Promise<WorkerResult> {
     const { workflow, backend, issue, abortController, logger } = this.options;
     const startTime = Date.now();
+    const startedAt = new Date();
     let totalUsage = emptyTokenUsage();
     let resultSuccess: boolean | null = null;
     let resultStopReason: string | null = null;
 
+    // Forward declared so the finalize() helper at the bottom can reach them.
+    let traceId: string | null = null;
+    const finalize = async (r: WorkerResult): Promise<WorkerResult> => {
+      if (this.options.traceWriter && traceId) {
+        const traceResult: TraceResult = workerResultToTrace(
+          r,
+          totalUsage,
+          resultStopReason,
+        );
+        await this.options.traceWriter.finish(traceId, traceResult);
+      }
+      return r;
+    };
+
     if (abortController.signal.aborted) {
-      return {
+      return finalize({
         kind: "cancelled",
         issueId: issue.id,
         reason: "aborted before start",
-      };
+      });
     }
 
     let prompt: string;
@@ -65,13 +89,45 @@ export class AgentRunner {
         attempt: { number: this.options.attempt, error: null },
       });
     } catch (err: any) {
-      return {
+      return finalize({
         kind: "error",
         issueId: issue.id,
         error: new AgentError(`Prompt render failed: ${err.message}`),
         attempt: this.options.attempt,
         durationMs: Date.now() - startTime,
-      };
+      });
+    }
+
+    // Persist the per-run trace bundle (best-effort, never blocks the run).
+    if (this.options.traceWriter) {
+      try {
+        const customTools = await serializeCustomTools(
+          this.options.tools ?? [],
+        );
+        traceId = await this.options.traceWriter.start({
+          laneName: workflow.name,
+          backend: workflow.backend,
+          ticket: {
+            id: issue.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            url: issue.url,
+          },
+          attempt: this.options.attempt,
+          startedAt,
+          renderedPrompt: prompt,
+          customTools,
+          backendOptions: workflow.backendOptions as Record<string, unknown>,
+        });
+        if (traceId) {
+          this.options.onTraceId?.(workflow.name, issue.id, traceId);
+        }
+      } catch (err: any) {
+        logger.warn(
+          { err, issueId: issue.id },
+          "Trace start failed (non-fatal)",
+        );
+      }
     }
 
     try {
@@ -96,6 +152,12 @@ export class AgentRunner {
         switch (ev.kind) {
           case "session_start":
             this.options.onSessionId?.(workflow.name, issue.id, ev.sessionId);
+            if (this.options.traceWriter && traceId) {
+              void this.options.traceWriter.attachSession(
+                traceId,
+                ev.sessionId,
+              );
+            }
             break;
           case "usage":
             totalUsage = mergeUsage(totalUsage, ev.usage);
@@ -118,34 +180,34 @@ export class AgentRunner {
             }
             break;
           case "error":
-            return {
+            return finalize({
               kind: "error",
               issueId: issue.id,
               error: new AgentError(ev.message),
               attempt: this.options.attempt,
               durationMs: Date.now() - startTime,
-            };
+            });
         }
       }
     } catch (err: any) {
       if (abortController.signal.aborted) {
-        return {
+        return finalize({
           kind: "cancelled",
           issueId: issue.id,
           reason: err?.message ?? "aborted",
-        };
+        });
       }
-      return {
+      return finalize({
         kind: "error",
         issueId: issue.id,
         error: err instanceof Error ? err : new AgentError(String(err)),
         attempt: this.options.attempt,
         durationMs: Date.now() - startTime,
-      };
+      });
     }
 
     if (resultSuccess === false) {
-      return {
+      return finalize({
         kind: "error",
         issueId: issue.id,
         error: new AgentError(
@@ -153,15 +215,46 @@ export class AgentRunner {
         ),
         attempt: this.options.attempt,
         durationMs: Date.now() - startTime,
-      };
+      });
     }
 
-    return {
+    return finalize({
       kind: "normal",
       issueId: issue.id,
       turnsCompleted: 1,
       usage: totalUsage,
       durationMs: Date.now() - startTime,
-    };
+    });
+  }
+}
+
+function workerResultToTrace(
+  r: WorkerResult,
+  totalUsage: TokenUsage,
+  resultStopReason: string | null,
+): TraceResult {
+  switch (r.kind) {
+    case "normal":
+      return {
+        outcome: "normal",
+        stopReason: resultStopReason,
+        durationMs: r.durationMs,
+        tokenUsage: r.usage,
+      };
+    case "cancelled":
+      return {
+        outcome: "cancelled",
+        stopReason: r.reason,
+        durationMs: 0,
+        tokenUsage: totalUsage,
+      };
+    case "error":
+      return {
+        outcome: "error",
+        stopReason: resultStopReason,
+        durationMs: r.durationMs,
+        tokenUsage: totalUsage,
+        errorMessage: r.error.message,
+      };
   }
 }

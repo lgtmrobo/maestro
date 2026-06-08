@@ -21,10 +21,21 @@ const trackerSchema = z.object({
     .default(["Done", "Canceled", "Cancelled", "Duplicate"]),
   assignee: z.string().nullable().default(null),
   labels: z.array(z.string()).default([]),
+  // Linear OAuth (actor=app) credentials. Only required when `apiKey` is a
+  // `lin_oauth_*` access token; ignored for personal `lin_api_*` keys.
+  refreshToken: z.string().optional(),
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
 });
 
 const workspaceSchema = z.object({
   rootDir: z.string(),
+  repo: z
+    .object({
+      url: z.string(),
+      branch: z.string().optional(),
+    })
+    .optional(),
 });
 
 const pollingSchema = z.object({
@@ -36,6 +47,14 @@ const agentSchema = z.object({
   maxTurns: z.number().default(150),
   maxRetryBackoffMs: z.number().default(300_000),
   retryOnNormalExit: z.boolean().default(false),
+  // State to move the issue to after a successful run. Must be in
+  // tracker.terminalStates so the next poll won't pick it back up.
+  completionState: z.string().default("Done"),
+  // Optional state to move the issue to on dispatch (e.g. "In Progress"),
+  // for observability. If unset, the issue stays in its current state
+  // while the agent runs. Must be in tracker.activeStates so the running
+  // entry's own filter doesn't push it back into the candidate pool.
+  inProgressState: z.string().optional(),
 });
 
 const backendOptionsSchema = z.object({
@@ -45,6 +64,11 @@ const backendOptionsSchema = z.object({
   disallowedTools: z.array(z.string()).nullable().default(null),
   systemPrompt: z.string().nullable().default(null),
   turnTimeoutMs: z.number().default(3_600_000),
+  // open-agent backend: route to any OpenAI-compatible or Anthropic-messages endpoint
+  apiType: z.enum(["anthropic-messages", "openai-completions"]).optional(),
+  apiKey: z.string().optional(),
+  baseURL: z.string().optional(),
+  // Codex-specific (future)
   approvalPolicy: z.string().optional(),
   sandbox: z.string().optional(),
 });
@@ -59,8 +83,9 @@ const workflowFrontmatterSchema = z.object({
     maxTurns: 150,
     maxRetryBackoffMs: 300_000,
     retryOnNormalExit: false,
+    completionState: "Done",
   }),
-  backend: z.enum(["claude", "codex"]).default("claude"),
+  backend: z.enum(["claude", "codex", "open-agent"]).default("claude"),
   backendOptions: backendOptionsSchema.default({
     model: null,
     permissionMode: "bypassPermissions",
@@ -76,18 +101,47 @@ const workflowFrontmatterSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * If a string starts with `$`, resolve it as a process.env lookup. Recursively
- * applies to nested string values in the config object.
+ * Resolve env-var references in string values. Two forms supported:
+ *
+ *   1. Whole-string `$VAR` — the entire string is replaced by process.env[VAR].
+ *      Used historically for things like `apiKey: $LINEAR_API_KEY`.
+ *
+ *   2. Substring `${VAR}` — interpolated into the surrounding string.
+ *      Used for partial paths like `rootDir: ${MAESTRO_DATA_DIR}/services`,
+ *      so the same workflow file works locally (~/maestro-workspaces) and in
+ *      the production container (/data/workspaces) by toggling the env var.
+ *
+ * In both forms the variable must be set, otherwise a ConfigError is thrown
+ * at load time (fail-fast > runtime surprises).
+ *
+ * Recursively descends into arrays and objects.
  */
 function resolveEnvVarsDeep<T>(value: T): T {
   if (typeof value === "string") {
-    if (value.startsWith("$")) {
+    // Whole-string $VAR (no braces, must be the entire string).
+    if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
       const varName = value.slice(1);
       const resolved = process.env[varName];
       if (resolved === undefined) {
         throw new ConfigError(`Environment variable "${varName}" is not set`);
       }
       return resolved as unknown as T;
+    }
+    // Substring ${VAR} interpolation anywhere in the string.
+    if (value.includes("${")) {
+      const interpolated = value.replace(
+        /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g,
+        (_match, varName: string) => {
+          const resolved = process.env[varName];
+          if (resolved === undefined) {
+            throw new ConfigError(
+              `Environment variable "${varName}" referenced in "${value}" is not set`,
+            );
+          }
+          return resolved;
+        },
+      );
+      return interpolated as unknown as T;
     }
     return value;
   }
@@ -152,7 +206,10 @@ export async function loadWorkflowFile(
   return {
     name: frontmatter.name,
     tracker: frontmatter.tracker,
-    workspace: { rootDir: expandHome(frontmatter.workspace.rootDir) },
+    workspace: {
+      rootDir: expandHome(frontmatter.workspace.rootDir),
+      ...(frontmatter.workspace.repo && { repo: frontmatter.workspace.repo }),
+    },
     polling: frontmatter.polling,
     agent: frontmatter.agent,
     backend: frontmatter.backend,

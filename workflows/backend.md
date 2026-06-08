@@ -3,53 +3,66 @@ name: backend
 tracker:
   kind: linear
   apiKey: $LINEAR_API_KEY
+  refreshToken: $LINEAR_REFRESH_TOKEN
+  clientId: $LINEAR_CLIENT_ID
+  clientSecret: $LINEAR_CLIENT_SECRET
   teamKey: NEU
   activeStates: ["Todo", "In Progress"]
   terminalStates: ["Done", "Canceled", "Cancelled", "Duplicate"]
   assignee: "me"
   labels: ["target:maestro-be", "route:auto"]
 workspace:
-  rootDir: ~/maestro-workspaces/backend
+  rootDir: ${MAESTRO_DATA_DIR}/backend
+  repo:
+    url: https://github.com/NeukoAI/neuko-services.git
+    branch: dev
 polling:
   intervalMs: 15000
 agent:
   maxConcurrent: 2
   maxTurns: 150
-backend: claude
+  completionState: "In Review"
+  inProgressState: "In Progress"
+backend: open-agent
 backendOptions:
-  model: sonnet
+  apiType: openai-completions
+  baseURL: https://api.concentrate.ai/v1
+  apiKey: $CONCENTRATE_API_KEY
+  model: anthropic/claude-sonnet-4-6
   permissionMode: bypassPermissions
 ---
 
-Solve this issue: **{{ issue.identifier }}** - {{ issue.title }}
+Solve this issue: **{{ issue.identifier }}** — {{ issue.title }}
 
 {{ issue.description }}
 
+## Ticket context (for skill calls)
+
+- Ticket id: `{{ issue.identifier }}`
+- Linear issue UUID: `{{ issue.id }}`
+- Issue URL: {{ issue.url }}
+- Base branch: `dev`
+- Your cwd is already a fresh clone of `neuko-services` on `dev`. **Do not `cd`** — bash commands are stateless and `cd` won't persist between invocations.
+
 ## Workflow
 
-1. `cd /Users/lucasrobitaille/Documents/Repos/neuko-core`
-2. Make sure you are on the latest `main`:
-   - `git fetch origin`
-   - `git checkout main && git pull --ff-only origin main`
-3. **Check for an existing PR for this ticket** — this may be a follow-up pass:
-   - `gh pr list --search "{{ issue.identifier }} in:title" --state open --json number,headRefName,url,title`
-   - If exactly one matching PR exists, treat this as a re-run. Read PR comments, inline review threads, failing checks.
-4. Branch selection:
-   - **Re-run path:** `git checkout <existing-branch> && git pull --ff-only origin <existing-branch>`. Address every reviewer comment and failing check.
-   - **First-pass path:** `git checkout -b feat/{{ issue.identifier | downcase }}-<short-kebab-slug>` off latest `main`.
-5. Implement the change with backend best practices in mind:
-   - Update database migrations alongside schema changes; never edit existing applied migrations.
-   - Add or update tests for any new endpoint, query, or service. Run `pnpm test` (or the project's equivalent) before pushing.
-   - Validate API contracts against existing consumers; if a breaking change is required, flag it in the PR body.
-   - **Track acceptance criteria** by flipping `- [ ]` → `- [x]` in the Linear issue description (UUID `{{ issue.id }}`) via the `linear_graphql` tool with `issueUpdate(id, input: { description })`.
-6. Commit with `{{ issue.identifier }}: <concise description>` style messages. Multiple commits are fine.
-7. Push: `git push -u origin HEAD`
-8. PR handling:
-   - **First-pass:** `gh pr create --base main --head <branch> --title "{{ issue.identifier }}: {{ issue.title }}" --body "<summary + migration notes + link to Linear issue>"`.
-   - **Re-run:** push updates the existing PR — no new PR.
-9. Report the PR URL on the final line.
+Run these three skills in order, with backend implementation work in between:
 
-Hard rules:
-- Migrations must be additive and reversible unless the ticket explicitly authorizes a destructive change.
-- Never modify production-only config (e.g. secrets, keys, billing endpoints) without explicit ticket authorization.
+1. **`Skill(skill="gitStart")`** — detects an existing PR for this ticket, walks every reviewer/bot comment into a punch list, and sets up the working branch (re-run checkout or `feat/{{ issue.identifier | downcase }}-<slug>` first-pass).
+
+2. **Implement the change.** Backend best practices:
+   - Update database migrations alongside schema changes; never edit existing applied migrations. Migrations must be additive and reversible unless the ticket explicitly authorizes a destructive change.
+   - Add or update tests for any new endpoint, query, or service. Run `pnpm test` (or the project's equivalent) before moving on.
+   - Validate API contracts against existing consumers; if a breaking change is required, flag it in the PR body.
+   - As you finish each verifiable acceptance criterion in the description, call **`Skill(skill="acceptanceSync")`** to flip the corresponding `- [ ]` to `- [x]`. You may call this multiple times.
+   - On a re-run, address every item from the `gitStart` punch list — bot or human reviewer feedback, failing checks, all of it.
+
+3. **`Skill(skill="gitFinish", args="reviewer: deusexmachina892")`** — commit with `{{ issue.identifier }}: <…>` messages, push, open or update the PR against `dev`, request review from `@deusexmachina892`, and post the PR link as a Linear comment on UUID `{{ issue.id }}`. End your response with the PR URL on its own line.
+
+## Hard rules
+
+- Do all work on the ticket branch — never push to `dev` directly.
 - One ticket = one PR.
+- Never modify production-only config (e.g. secrets, keys, billing endpoints) without explicit ticket authorization.
+- If reviewer feedback is ambiguous or contradicts the ticket, leave a `gh pr comment` asking for clarification rather than guessing.
+- Never check an acceptance-criteria box you did not actually implement and verify.

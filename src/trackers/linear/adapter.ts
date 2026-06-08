@@ -1,13 +1,30 @@
-import type { Tracker } from '../types.js';
-import type { Issue, TrackerConfig } from '../../types.js';
-import { LinearClient } from './client.js';
+import type { Tracker } from "../types.js";
+import type { Issue, TrackerConfig } from "../../types.js";
+import { LinearClient, type OAuthCredentials } from "./client.js";
+
+function oauthFromConfig(config: TrackerConfig): OAuthCredentials | null {
+  if (!config.apiKey.startsWith("lin_oauth_")) return null;
+  const { refreshToken, clientId, clientSecret } = config;
+  if (!refreshToken || !clientId || !clientSecret) {
+    throw new Error(
+      "Linear apiKey is a lin_oauth_* token but refreshToken / clientId / clientSecret are missing in tracker config",
+    );
+  }
+  return { refreshToken, clientId, clientSecret };
+}
 
 export class LinearAdapter implements Tracker {
   private client: LinearClient;
   private activeStates: string[];
 
   constructor(config: TrackerConfig) {
-    this.client = new LinearClient(config.endpoint, config.apiKey, config.teamKey, config.assignee);
+    this.client = new LinearClient(
+      config.endpoint,
+      config.apiKey,
+      config.teamKey,
+      config.assignee,
+      oauthFromConfig(config),
+    );
     this.activeStates = config.activeStates;
   }
 

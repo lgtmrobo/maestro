@@ -1,24 +1,33 @@
-import { Lane } from './lane.js';
-import type { Logger } from './logger.js';
-import type { WorkflowConfig } from './types.js';
-import { buildToolsForWorkflow } from './tools.js';
-import { EventEmitter } from 'node:events';
+import { Lane } from "./lane.js";
+import type { Logger } from "./logger.js";
+import type { WorkflowConfig } from "./types.js";
+import { buildToolsForWorkflow } from "./tools/index.js";
+import { TraceWriter } from "./trace.js";
+import { EventEmitter } from "node:events";
 
 export interface OrchestratorOptions {
   workflows: WorkflowConfig[];
   logger: Logger;
   /** Extra env to pass through to spawned agents (e.g. GITHUB_TOKEN). */
   agentEnv?: Record<string, string>;
+  /**
+   * Optional trace writer. When provided, every lane persists a per-run
+   * trace bundle (rendered prompt + tool manifest + backend options + result)
+   * via the writer. When omitted, runs proceed without trace persistence.
+   */
+  traceWriter?: TraceWriter;
 }
 
 /** Top-level coordinator across N lanes. */
 export class Orchestrator extends EventEmitter {
   private lanes = new Map<string, Lane>();
   private logger: Logger;
+  readonly traceWriter?: TraceWriter;
 
   constructor(opts: OrchestratorOptions) {
     super();
     this.logger = opts.logger;
+    this.traceWriter = opts.traceWriter;
 
     for (const workflow of opts.workflows) {
       const lane = new Lane({
@@ -30,15 +39,22 @@ export class Orchestrator extends EventEmitter {
           return toolCache.get(workflow.name) ?? [];
         },
         agentEnv: () => opts.agentEnv ?? {},
+        traceWriter: opts.traceWriter,
       });
 
       // Forward lane events to top-level bus so HTTP server can subscribe once
-      lane.on('tick:start', () => this.emit('lane:tick:start', workflow.name));
-      lane.on('tick:end', (n) => this.emit('lane:tick:end', workflow.name, n));
-      lane.on('running:add', (entry) => this.emit('running:add', entry));
-      lane.on('running:remove', (id, result) => this.emit('running:remove', workflow.name, id, result));
-      lane.on('agent:event', (id, name, detail) => this.emit('agent:event', workflow.name, id, name, detail));
-      lane.on('agent:tokens', (id, usage) => this.emit('agent:tokens', workflow.name, id, usage));
+      lane.on("tick:start", () => this.emit("lane:tick:start", workflow.name));
+      lane.on("tick:end", (n) => this.emit("lane:tick:end", workflow.name, n));
+      lane.on("running:add", (entry) => this.emit("running:add", entry));
+      lane.on("running:remove", (id, result) =>
+        this.emit("running:remove", workflow.name, id, result),
+      );
+      lane.on("agent:event", (id, name, detail) =>
+        this.emit("agent:event", workflow.name, id, name, detail),
+      );
+      lane.on("agent:tokens", (id, usage) =>
+        this.emit("agent:tokens", workflow.name, id, usage),
+      );
 
       this.lanes.set(workflow.name, lane);
     }
@@ -54,28 +70,40 @@ export class Orchestrator extends EventEmitter {
         const tools = await buildToolsForWorkflow(w.tracker);
         toolCache.set(w.name, tools);
       } catch (err: any) {
-        this.logger.error({ err, lane: w.name }, 'Failed to build tools for lane');
+        this.logger.error(
+          { err, lane: w.name },
+          "Failed to build tools for lane",
+        );
       }
     }
   }
 
-  laneNames(): string[] { return [...this.lanes.keys()]; }
-  getLane(name: string): Lane | undefined { return this.lanes.get(name); }
-  allLanes(): Lane[] { return [...this.lanes.values()]; }
+  laneNames(): string[] {
+    return [...this.lanes.keys()];
+  }
+  getLane(name: string): Lane | undefined {
+    return this.lanes.get(name);
+  }
+  allLanes(): Lane[] {
+    return [...this.lanes.values()];
+  }
 
   async start(): Promise<void> {
-    this.logger.info({ lanes: this.laneNames() }, 'Orchestrator starting');
+    this.logger.info({ lanes: this.laneNames() }, "Orchestrator starting");
     for (const lane of this.lanes.values()) {
       await lane.start();
     }
   }
 
   async stop(): Promise<void> {
-    this.logger.info('Orchestrator stopping');
+    this.logger.info("Orchestrator stopping");
     for (const lane of this.lanes.values()) {
       await lane.stop();
     }
   }
 }
 
-const toolCache = new Map<string, Awaited<ReturnType<typeof buildToolsForWorkflow>>>();
+const toolCache = new Map<
+  string,
+  Awaited<ReturnType<typeof buildToolsForWorkflow>>
+>();

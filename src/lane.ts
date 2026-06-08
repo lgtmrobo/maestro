@@ -4,6 +4,8 @@ import type { ToolDef } from "./backends/types.js";
 import type { Tracker } from "./trackers/types.js";
 import { createTracker } from "./trackers/factory.js";
 import { WorkspaceManager } from "./workspace.js";
+import { buildAgentEnv } from "./agent-env.js";
+import type { TraceWriter } from "./trace.js";
 import type {
   Issue,
   RunningEntry,
@@ -52,19 +54,27 @@ export class Lane extends EventEmitter {
   /** Static env additions for the agent subprocess. */
   private agentEnv: () => Record<string, string>;
 
+  /** Optional trace writer. When set, every run persists a trace bundle. */
+  private traceWriter?: TraceWriter;
+
   constructor(opts: {
     workflow: WorkflowConfig;
     logger: Logger;
     toolBuilder: () => ToolDef[];
     agentEnv?: () => Record<string, string>;
+    traceWriter?: TraceWriter;
   }) {
     super();
     this.workflow = opts.workflow;
     this.tracker = createTracker(opts.workflow.tracker);
-    this.workspace = new WorkspaceManager(opts.workflow.workspace.rootDir);
+    this.workspace = new WorkspaceManager(
+      opts.workflow.workspace.rootDir,
+      opts.workflow.workspace.repo,
+    );
     this.logger = opts.logger;
     this.toolBuilder = opts.toolBuilder;
     this.agentEnv = opts.agentEnv ?? (() => ({}));
+    this.traceWriter = opts.traceWriter;
   }
 
   // -------------------------------------------------------------------------
@@ -247,6 +257,7 @@ export class Lane extends EventEmitter {
       startedAt: new Date(),
       attempt,
       sessionId: null,
+      traceId: null,
       lastEvent: null,
       lastEventAt: null,
       lastActivityAt: new Date(),
@@ -271,6 +282,27 @@ export class Lane extends EventEmitter {
       "Issue dispatched",
     );
 
+    // Best-effort: flip the ticket to the configured in-progress state so
+    // external observers (Slack notifications, dashboards) can see that
+    // work is underway. Skipped if the ticket is already in that state, or
+    // if no state is configured. Failure is non-fatal — the agent still runs.
+    const ips = this.workflow.agent.inProgressState;
+    if (ips && issue.state !== ips) {
+      try {
+        await this.tracker.updateIssueState(issue.id, ips);
+        entry.state = ips;
+        this.logger.info(
+          { lane: this.name, issueId: issue.id, state: ips },
+          "Updated issue state on dispatch",
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          { err, issueId: issue.id, state: ips },
+          "Failed to set in-progress state on dispatch (non-fatal)",
+        );
+      }
+    }
+
     const backend = getBackend(this.workflow.backend);
 
     const runner = new AgentRunner({
@@ -283,7 +315,8 @@ export class Lane extends EventEmitter {
       abortController: ac,
       logger: this.logger,
       tools: this.toolBuilder(),
-      env: { ...process.env, ...this.agentEnv() } as Record<string, string>,
+      env: buildAgentEnv(process.env, this.agentEnv()),
+      traceWriter: this.traceWriter,
       onEvent: (_lane, issueId, eventName, detail) => {
         const e = this.running.get(issueId);
         if (e) {
@@ -301,6 +334,10 @@ export class Lane extends EventEmitter {
       onSessionId: (_lane, issueId, sessionId) => {
         const e = this.running.get(issueId);
         if (e) e.sessionId = sessionId;
+      },
+      onTraceId: (_lane, issueId, tid) => {
+        const e = this.running.get(issueId);
+        if (e) e.traceId = tid;
       },
     });
 
@@ -350,6 +387,39 @@ export class Lane extends EventEmitter {
           this.logger.error(
             { err, issueId: issue.id },
             "Failed to post completion comment",
+          );
+        }
+        try {
+          await this.tracker.updateIssueState(
+            issue.id,
+            this.workflow.agent.completionState,
+          );
+          this.logger.info(
+            {
+              lane: this.name,
+              issueId: issue.id,
+              state: this.workflow.agent.completionState,
+            },
+            "Updated issue state after success",
+          );
+        } catch (err: any) {
+          this.logger.error(
+            { err, issueId: issue.id },
+            "Failed to update issue state — ticket may re-dispatch",
+          );
+        }
+        // Clean up the per-ticket workspace on success. Keeps the volume
+        // bounded in production. Failures are left in place for debugging.
+        try {
+          await this.workspace.remove(issue.identifier);
+          this.logger.info(
+            { lane: this.name, identifier: issue.identifier },
+            "Workspace cleaned up after success",
+          );
+        } catch (err: any) {
+          this.logger.warn(
+            { err, identifier: issue.identifier },
+            "Workspace cleanup failed (non-fatal)",
           );
         }
         break;
