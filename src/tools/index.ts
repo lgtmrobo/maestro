@@ -17,6 +17,7 @@ import {
   buildFigmaRenderNodeTool,
 } from "./figma.js";
 import { buildLinearGraphqlTool } from "./linear-graphql.js";
+import { buildWriteTextTool, resolveWriteTextOptions } from "./write-text.js";
 
 export async function buildToolsForWorkflow(
   tracker: TrackerConfig,
@@ -37,6 +38,15 @@ export async function buildToolsForWorkflow(
       await buildFigmaRenderNodeTool(figmaKey),
       await buildFigmaGetImageFillsTool(figmaKey),
     );
+  }
+
+  // write_text: cost-routing tool that dispatches boilerplate text-gen jobs
+  // (commit messages, PR bodies, Linear comments) to a cheap model via the
+  // same OpenAI-completions gateway the lane already uses. Activated when
+  // WRITE_TEXT_API_KEY or CONCENTRATE_API_KEY is present.
+  const writeTextOpts = resolveWriteTextOptions();
+  if (writeTextOpts) {
+    tools.push(await buildWriteTextTool(writeTextOpts));
   }
 
   return tools;

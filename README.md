@@ -77,6 +77,14 @@ backendOptions:
 
 `apiType` is the wire protocol shape, not the vendor. For 99% of gateways (concentrate, OpenRouter, LiteLLM, Vercel AI Gateway, Together, Groq, ...) use `openai-completions`.
 
+## Cost routing with `write_text`
+
+The main agent loop runs on the lane's primary model (typically Sonnet) for reasoning, code edits, and tool choreography. Mechanical text-gen jobs — commit messages, PR descriptions, Linear comments — are routed to a smaller model via the `write_text` tool, which posts to the same OpenAI-completions gateway the lane uses but with a Haiku-class model (default `anthropic/claude-haiku-4-5`).
+
+Skills that benefit from this delegation (currently `gitFinish`) instruct the agent to call `write_text(task=..., context=...)` and use the returned string verbatim. When `WRITE_TEXT_API_KEY`/`CONCENTRATE_API_KEY` is unset, the tool is not registered and skill prompts fall back to literal-text recipes.
+
+The model the cheap calls go to is independent of the lane's primary model — change `WRITE_TEXT_MODEL` without touching the workflow file.
+
 ## Skills
 
 Workflows shrink dramatically when reusable boilerplate is promoted to skills. `src/skills/` holds three today:
@@ -194,6 +202,9 @@ Workspaces live on the mounted volume at `/data/workspaces`. Update each workflo
 | `LINEAR_CLIENT_SECRET` | If `LINEAR_API_KEY` is `lin_oauth_*` | OAuth client secret from your Linear application |
 | `GITHUB_TOKEN` | If clone-per-workspace against private github | Bot PAT; also exported to agent as `GH_TOKEN` so `gh` auths |
 | `CONCENTRATE_API_KEY` | If using `open-agent` backend | concentrate.ai gateway key |
+| `WRITE_TEXT_API_KEY` | Optional | Override gateway key for the `write_text` tool. Falls back to `CONCENTRATE_API_KEY`. Set to empty to disable the tool. |
+| `WRITE_TEXT_BASE_URL` | Optional | Override gateway base URL for `write_text`. Default `https://api.concentrate.ai/v1`. |
+| `WRITE_TEXT_MODEL` | Optional | Cheap model id used by `write_text`. Default `anthropic/claude-haiku-4-5`. |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` | Production only | Dashboard auth. Both must be set for auth to activate; otherwise local-dev mode (no auth) |
 | `MAESTRO_WORKFLOWS` | In container | Space-separated workflow paths |
 | `MAESTRO_PORT` | Optional | Listen port (default 4000) |
