@@ -3,6 +3,22 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+if (process.env.MAESTRO_LOG_FETCH === "1") {
+  const _fetch = globalThis.fetch;
+  globalThis.fetch = async (input: any, init?: any) => {
+    const url =
+      typeof input === "string" ? input : (input?.url ?? String(input));
+    const res = await _fetch(input, init);
+    if (!res.ok) {
+      const body = await res.clone().text();
+      console.error(
+        `\n[FETCH ${res.status}] ${url}\n  body: ${body.slice(0, 1500)}\n`,
+      );
+    }
+    return res;
+  };
+}
+
 const envFile = resolve(process.cwd(), ".env");
 if (existsSync(envFile)) {
   const envContent = readFileSync(envFile, "utf-8");
