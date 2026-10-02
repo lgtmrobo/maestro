@@ -21,7 +21,7 @@ function sampleStart(
   return {
     laneName: "frontend",
     backend: "open-agent",
-    ticket: { id: "uuid-1", identifier: "NEU-1", title: "Test", url: null },
+    ticket: { id: "uuid-1", identifier: "ENG-1", title: "Test", url: null },
     attempt: 1,
     startedAt: new Date("2026-05-22T00:00:00Z"),
     renderedPrompt: "Hello world",
@@ -54,7 +54,7 @@ describe("TraceWriter", () => {
     const record = JSON.parse(raw);
     expect(record.traceId).toBe(id);
     expect(record.laneName).toBe("frontend");
-    expect(record.ticket.identifier).toBe("NEU-1");
+    expect(record.ticket.identifier).toBe("ENG-1");
     expect(record.renderedPrompt).toBe("Hello world");
     expect(record.sessionId).toBeNull();
     expect(record.result).toBeNull();
@@ -98,7 +98,7 @@ describe("TraceWriter", () => {
       sampleStart({
         ticket: {
           id: "uuid-A",
-          identifier: "NEU-A",
+          identifier: "ENG-A",
           title: "A",
           url: null,
         },
@@ -111,7 +111,7 @@ describe("TraceWriter", () => {
         laneName: "backend",
         ticket: {
           id: "uuid-B",
-          identifier: "NEU-B",
+          identifier: "ENG-B",
           title: "B",
           url: null,
         },

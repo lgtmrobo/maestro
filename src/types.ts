@@ -1,7 +1,7 @@
 // Normalized issue, shared across trackers
 export interface Issue {
   id: string; // tracker-internal stable id
-  identifier: string; // human-readable e.g. "NEU-130"
+  identifier: string; // human-readable e.g. "ENG-130"
   title: string;
   description: string | null;
   state: string; // tracker state name
@@ -74,7 +74,7 @@ export interface TrackerConfig {
   kind: "linear" | "github" | "gitlab" | "memory";
   endpoint: string;
   apiKey: string;
-  teamKey: string; // Linear team key (e.g. "NEU"), GitHub repo, etc
+  teamKey: string; // Linear team key (e.g. "ENG"), GitHub repo, etc
   activeStates: string[];
   terminalStates: string[];
   assignee: string | null; // "me" or user id; null = no filter

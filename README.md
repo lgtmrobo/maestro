@@ -1,25 +1,41 @@
 # Maestro
 
-Agent-agnostic orchestration for autonomous coding agents. Polls a tracker (Linear / GitHub / GitLab), spawns isolated agent runs against tickets, lands PRs, updates state. One daemon, N workflows.
+Maestro is an autonomous agent orchestrator that turns Linear tickets into review-ready pull requests. A long-running daemon polls Linear for labelled tickets and starts a coding agent for each one in a fresh clone of the target repo. The agent implements the change, checks off acceptance criteria, opens the PR and links it back on the ticket. Each PR is assigned to a review agent (or a human reviewer). When the ticket is picked up again, Maestro collects every review comment and failing check into a punch list and has the agent work through it. It's backend-agnostic: it can drive Claude directly or any OpenAI-compatible model gateway.
 
-> Inspired by [Symphony](https://github.com/openai/symphony) (OpenAI) and [hatice](https://github.com/mksglu/hatice). Backend-agnostic — drives Claude directly, any OpenAI-compatible gateway via `open-agent`, and (eventually) Codex.
+> Inspired by [Symphony](https://github.com/openai/symphony) (OpenAI) and [hatice](https://github.com/mksglu/hatice).
 
-## Running it
+## How it works
 
-Production target is Fly.io — see [Deploying to Fly.io](#deploying-to-flyio) below for the deploy runbook.
+```
+Linear ticket ──▶ Lane (poll every 15s, filter by team/labels/state)
+                    │
+                    └─▶ Agent run (one per ticket, bounded concurrency)
+                          ├─ fresh git clone of the target repo
+                          ├─ gitStart: detect existing PR → review punch list → branch
+                          ├─ agent loop (Claude SDK or OpenAI-compatible gateway)
+                          ├─ acceptanceSync: tick Linear `- [ ]` criteria as they land
+                          └─ gitFinish: commit, push, open/update PR, request review,
+                                        comment PR link on the ticket → "In Review"
+```
 
-For local testing:
+- **Workflows are config-as-code.** Each `workflows/*.md` file is one lane: YAML frontmatter (tracker filter, repo, backend, model, limits) plus a Liquid prompt template.
+- **One daemon, many lanes.** The orchestrator runs every lane in one process and serves a live SSE dashboard and `/healthz`.
+- **Pluggable backends.** `claude` (Claude Agent SDK) or `open-agent` (any OpenAI-compatible endpoint: concentrate.ai, OpenRouter, LiteLLM, …).
+- **Skills and tools.** Reusable playbooks (`gitStart`, `acceptanceSync`, `gitFinish`) and agent tools (`linear_graphql`, Figma) keep workflow prompts short.
+
+## Quick start
 
 ```bash
 pnpm install
-cp .env.example .env   # fill in LINEAR_API_KEY, GITHUB_TOKEN, CONCENTRATE_API_KEY,
-                       # and MAESTRO_DATA_DIR (e.g. /Users/you/maestro-workspaces)
-pnpm tsx bin/maestro.ts start -w workflows/<your-workflow>.md -p 4001
+cp .env.example .env        # LINEAR_API_KEY, GITHUB_TOKEN, CONCENTRATE_API_KEY, MAESTRO_DATA_DIR
+cp workflows/backend.md workflows/my-lane.md   # set teamKey, labels, repo url, reviewer
+pnpm tsx bin/maestro.ts validate -w workflows/my-lane.md
+pnpm tsx bin/maestro.ts start    -w workflows/my-lane.md -p 4001
 ```
 
-Open `http://127.0.0.1:4001` for the dashboard.
+Open `http://127.0.0.1:4001` for the dashboard. Then label a Linear ticket to match your lane (e.g. `target:maestro-be` + `route:auto`), assign it to the Maestro user, and the lane will pick it up on its next poll.
 
-Workflow `workspace.rootDir` is `${MAESTRO_DATA_DIR}/<lane>` — same file works locally and in the container. In production the container sets `MAESTRO_DATA_DIR=/data/workspaces` to match the Fly volume mount.
+Workflow `workspace.rootDir` is `${MAESTRO_DATA_DIR}/<lane>`, so the same file works locally and in the container. In production the container sets `MAESTRO_DATA_DIR=/data/workspaces` to match the Fly volume mount. See [Deploying to Fly.io](#deploying-to-flyio) for the production runbook.
 
 ## Concepts
 
@@ -50,18 +66,19 @@ src/
     open-agent.ts              OpenAI-compatible gateway driver
     codex.ts                   stub
     registry.ts                kind → backend lookup
-  trackers/                    Linear / GitHub / GitLab adapters
+  trackers/                    tracker adapters (Linear today; GitHub / GitLab stubbed)
   tools/                       agent-callable functions (linear_graphql, ...)
   skills/                      reusable prompt playbooks (gitStart, acceptanceSync, gitFinish)
   http/
     server.ts                  Hono server + SSE + healthz + basic auth
     dashboard.ts               embedded dashboard HTML
 workflows/
-  frontend.md                  open-agent + concentrate.ai, neuko-core@dev
-  backend.md                   open-agent + concentrate.ai, neuko-services@dev
+  frontend.md                  example lane: web frontend (with Figma tools)
+  backend.md                   example lane: generic backend service
+  backend-python.md            example lane: Python service with repo conventions
 ```
 
-`workflows/frontend.md` and `workflows/backend.md` are working Neuko production lanes using the `open-agent` backend through concentrate.ai. Adapt them or add new files for additional lanes.
+The files in `workflows/` are example lanes using the `open-agent` backend through concentrate.ai. Copy one and point it at your own team, labels and repo.
 
 ## Configuring a workflow against a gateway
 
@@ -87,7 +104,7 @@ Workflows shrink dramatically when reusable boilerplate is promoted to skills. `
 | `acceptanceSync` | Flip Linear acceptance-criteria checkboxes (`- [ ]` → `- [x]`) via `linear_graphql` once the corresponding behavior is implemented and verified. |
 | `gitFinish` | Commit, push, open OR update the PR, optionally `--add-reviewer <handle>` (passed via skill `args`), post the PR link as a Linear comment. |
 
-Workflow bodies invoke them by name: `Skill(skill="gitStart")`, `Skill(skill="gitFinish", args="reviewer: lgtmrobo")`, etc. Skill prompts are injected into the conversation when invoked, with optional `allowedTools` whitelists to scope each one.
+Workflow bodies invoke them by name: `Skill(skill="gitStart")`, `Skill(skill="gitFinish", args="reviewer: your-reviewer")`, etc. Skill prompts are injected into the conversation when invoked, with optional `allowedTools` whitelists to scope each one.
 
 Skills are registered against `@codeany/open-agent-sdk`'s registry and only apply to lanes using `backend: open-agent`. To add a skill: drop a file in `src/skills/` exporting a `SkillDefinition`, add it to the `MAESTRO_SKILLS` array in `src/skills/index.ts`.
 
@@ -99,7 +116,7 @@ When a workflow declares `workspace.repo`, each ticket gets a fresh clone of tha
 workspace:
   rootDir: /data/workspaces/services
   repo:
-    url: https://github.com/NeukoAI/neuko-services.git
+    url: https://github.com/your-org/your-repo.git
     branch: dev
 ```
 
@@ -178,7 +195,7 @@ The dashboard is reachable at `https://<your-app>.fly.dev/` and protected by bas
 To run multiple workflow files on one instance:
 
 ```bash
-fly secrets set MAESTRO_WORKFLOWS="workflows/services.md workflows/frontend.md workflows/backend.md"
+fly secrets set MAESTRO_WORKFLOWS="workflows/frontend.md workflows/backend.md"
 fly deploy
 ```
 
@@ -203,7 +220,7 @@ Workspaces live on the mounted volume at `/data/workspaces`. Update each workflo
 
 ```bash
 pnpm typecheck
-pnpm test          # no test files yet
+pnpm test
 pnpm build
 pnpm tsx bin/maestro.ts validate -w workflows/<file>.md   # syntax check a workflow
 ```

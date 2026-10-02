@@ -6,7 +6,7 @@ tracker:
   refreshToken: $LINEAR_REFRESH_TOKEN
   clientId: $LINEAR_CLIENT_ID
   clientSecret: $LINEAR_CLIENT_SECRET
-  teamKey: NEU
+  teamKey: ENG
   activeStates: ["Todo", "In Progress"]
   terminalStates: ["Done", "Canceled", "Cancelled", "Duplicate"]
   assignee: "me"
@@ -14,7 +14,7 @@ tracker:
 workspace:
   rootDir: ${MAESTRO_DATA_DIR}/frontend
   repo:
-    url: https://github.com/NeukoAI/neuko-core.git
+    url: https://github.com/your-org/your-repo.git
     branch: dev
 polling:
   intervalMs: 15000
@@ -42,7 +42,7 @@ Solve this issue: **{{ issue.identifier }}** — {{ issue.title }}
 - Linear issue UUID: `{{ issue.id }}`
 - Issue URL: {{ issue.url }}
 - Base branch: `dev`
-- Your cwd is already a fresh clone of `neuko-core` on `dev`. **Do not `cd`** — bash commands are stateless and `cd` won't persist between invocations.
+- Your cwd is already a fresh clone of the target repo on `dev`. **Do not `cd`** — bash commands are stateless and `cd` won't persist between invocations.
 
 ## Reading Figma designs
 
@@ -67,7 +67,7 @@ Run these three skills in order, with frontend implementation work in between:
    - As you finish each verifiable acceptance criterion in the description, call **`Skill(skill="acceptanceSync")`** to flip the corresponding `- [ ]` to `- [x]`. You may call this multiple times.
    - On a re-run, address every item from the `gitStart` punch list — bot or human reviewer feedback, failing checks, all of it.
 
-3. **`Skill(skill="gitFinish", args="reviewer: lgtmrobo")`** — commit with `{{ issue.identifier }}: <…>` messages, push, open or update the PR against `dev`, request review from `@lgtmrobo`, and post the PR link as a Linear comment on UUID `{{ issue.id }}`. End your response with the PR URL on its own line.
+3. **`Skill(skill="gitFinish", args="reviewer: your-reviewer")`** — commit with `{{ issue.identifier }}: <…>` messages, push, open or update the PR against `dev`, request review from `@your-reviewer`, and post the PR link as a Linear comment on UUID `{{ issue.id }}`. End your response with the PR URL on its own line.
 
 ## Hard rules
 
