@@ -6,7 +6,7 @@ describe("buildAgentEnv", () => {
     const out = buildAgentEnv({
       PATH: "/usr/bin:/bin",
       HOME: "/root",
-      USER: "neuko",
+      USER: "agent",
       SHELL: "/bin/bash",
       LANG: "en_US.UTF-8",
       TMPDIR: "/tmp",
@@ -14,7 +14,7 @@ describe("buildAgentEnv", () => {
     expect(out).toEqual({
       PATH: "/usr/bin:/bin",
       HOME: "/root",
-      USER: "neuko",
+      USER: "agent",
       SHELL: "/bin/bash",
       LANG: "en_US.UTF-8",
       TMPDIR: "/tmp",

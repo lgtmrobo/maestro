@@ -8,7 +8,7 @@ directory changes.
 
 ## 1. Identify the ticket
 
-Use the ticket identifier (e.g. \`NEU-123\`) and title from the issue brief at
+Use the ticket identifier (e.g. \`ENG-123\`) and title from the issue brief at
 the top of this conversation.
 
 ## 2. Detect an existing PR for this ticket
@@ -35,9 +35,9 @@ gh pr checks N
 \`\`\`
 
 Rules:
-1. **Bot comments count.** Treat \`lgtmrobo\`, \`hermes\`, \`coderabbit\`,
+1. **Bot comments count.** Treat \`coderabbit\`, \`github-actions[bot]\`,
    \`vercel[bot]\`, etc. as equivalent to human reviewers.
-2. **Only \`neuko-maestro\`'s own comments may be ignored** — they are your
+2. **Only \`maestro-bot\`'s own comments may be ignored** — they are your
    prior status updates.
 3. **List every actionable item before doing anything else.** Anything
    matching \`- [ ]\`, "Please add/fix", "requesting fix", "missing X",
