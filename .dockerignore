@@ -1,0 +1,26 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.claude
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Local workspace scratch dirs — never bake into the image.
+/tmp
+maestro-workspaces
+
+# Tests and CI scaffolding don't need to ship in the runtime image.
+test
+.github
+
+# Editor noise
+*.swp
+*.swo
+
+# README and docs are small; keep them so the container has full source.

@@ -1,0 +1,49 @@
+# Maestro on Fly.io
+#
+# Single VM hosting the orchestrator + SSE dashboard. Workspaces live on a
+# persistent volume so workflow re-runs don't pay the clone cost on every
+# machine restart.
+#
+# Deploy:
+#   fly launch --no-deploy             # one-time, accept defaults, edit this file
+#   fly volumes create maestro_workspaces --size 10 --region <region>
+#   fly secrets set LINEAR_API_KEY=lin_oauth_... LINEAR_REFRESH_TOKEN=lin_refresh_... \
+#                   LINEAR_CLIENT_ID=... LINEAR_CLIENT_SECRET=... \
+#                   GITHUB_TOKEN=... CONCENTRATE_API_KEY=... \
+#                   BASIC_AUTH_USER=... BASIC_AUTH_PASSWORD=...
+#   fly deploy
+
+app = "maestro"
+primary_region = "ord"
+
+[build]
+
+[env]
+  # MAESTRO_WORKFLOWS is intentionally NOT defaulted here — set it via
+  # `fly secrets set MAESTRO_WORKFLOWS="workflows/<your-prod-workflow>.md"`
+  # so the production lane is an explicit decision, not an inherited default.
+  MAESTRO_PORT     = "4000"
+  MAESTRO_HOST     = "0.0.0.0"
+  MAESTRO_DATA_DIR = "/data/workspaces"
+
+[http_service]
+  internal_port       = 4000
+  force_https         = true
+  auto_stop_machines  = false   # orchestrator must stay running to poll
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout  = "5s"
+    method   = "GET"
+    path     = "/healthz"
+
+[[mounts]]
+  source      = "maestro_workspaces"
+  destination = "/data/workspaces"
+
+[[vm]]
+  cpu_kind   = "shared"
+  cpus       = 1
+  memory_mb  = 1024
